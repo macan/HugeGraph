@@ -2,7 +2,8 @@
 import { ref, shallowRef, onMounted, onUnmounted, watch, computed, nextTick, markRaw } from 'vue';
 import * as d3 from 'd3';
 import { 
-  Search, ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Upload, Layers 
+  Search, ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Upload, Layers,
+  ChevronLeft, ChevronRight
 } from 'lucide-vue-next';
 
 interface Node extends d3.SimulationNodeDatum {
@@ -42,6 +43,9 @@ const transform = shallowRef<d3.ZoomTransform>(d3.zoomIdentity);
 const isSimulating = ref(false);
 const dimensions = ref({ width: 0, height: 0 });
 const graphUrl = ref('');
+const isCollapsed = ref(false);
+const selectedGroup = ref<number | null>(null);
+const groupViewMode = ref(false);
 
 // Simulation and Zoom refs
 const simulationRef = shallowRef<d3.Simulation<Node, Link> | null>(null);
@@ -145,130 +149,83 @@ const handleUrlLoad = async () => {
   }
 };
 
-// K-means Clustering Algorithm (Edge-Aware)
-const runKMeans = (k: number) => {
+// Label Propagation Algorithm
+const runLabelPropagation = () => {
   if (data.value.nodes.length === 0) return;
   
   loading.value = true;
   const nodes = data.value.nodes;
   const links = data.value.links;
   
-  // 1. Calculate structural features for each node
-  const nodeFeatures = new Map<string, { 
-    x: number, y: number, 
-    degree: number, 
-    nx: number, ny: number 
-  }>();
+  // 1. Initialize labels
+  const labels = new Map<string, number>();
+  const adj = new Map<string, string[]>();
   
-  // Initialize with spatial data
-  nodes.forEach(node => {
-    nodeFeatures.set(node.id, { 
-      x: node.x || 0, y: node.y || 0, 
-      degree: 0, nx: 0, ny: 0 
-    });
+  nodes.forEach((node, i) => {
+    labels.set(node.id, i);
+    adj.set(node.id, []);
   });
   
-  // Calculate degree and neighbor centroids
   links.forEach(link => {
     const s = typeof link.source === 'string' ? link.source : (link.source as Node).id;
     const t = typeof link.target === 'string' ? link.target : (link.target as Node).id;
-    
-    const fs = nodeFeatures.get(s);
-    const ft = nodeFeatures.get(t);
-    
-    if (fs && ft) {
-      fs.degree++;
-      fs.nx += ft.x;
-      fs.ny += ft.y;
-      
-      ft.degree++;
-      ft.nx += fs.x;
-      ft.ny += fs.y;
-    }
-  });
-  
-  // Finalize neighbor averages and normalize features
-  let maxDegree = 0;
-  nodes.forEach(node => {
-    const f = nodeFeatures.get(node.id)!;
-    if (f.degree > 0) {
-      f.nx /= f.degree;
-      f.ny /= f.degree;
-    } else {
-      f.nx = f.x;
-      f.ny = f.y;
-    }
-    maxDegree = Math.max(maxDegree, f.degree);
+    adj.get(s)!.push(t);
+    adj.get(t)!.push(s);
   });
 
-  // 2. Initialize centroids in the augmented feature space
-  // Feature vector: [x, y, degree_normalized, nx, ny]
-  // We'll weight spatial vs structural. Let's use 0.5 each.
-  const getFeature = (nodeId: string) => {
-    const f = nodeFeatures.get(nodeId)!;
-    return [
-      f.x, f.y, 
-      (f.degree / (maxDegree || 1)) * 500, // Scale degree to match spatial range roughly
-      f.nx, f.ny
-    ];
-  };
-
-  let centroids = Array.from({ length: k }, () => {
-    const randomNode = nodes[Math.floor(Math.random() * nodes.length)];
-    return getFeature(randomNode.id);
-  });
-
-  const maxIterations = 25;
-  let iterations = 0;
   let changed = true;
+  let iterations = 0;
+  const maxIterations = 20;
 
   while (changed && iterations < maxIterations) {
     changed = false;
     iterations++;
-
-    // Assign nodes to nearest centroid in 5D space
-    nodes.forEach(node => {
-      const f = getFeature(node.id);
-      let minDist = Infinity;
-      let closestCluster = 0;
+    
+    // Shuffle nodes
+    const shuffledNodes = [...nodes].sort(() => Math.random() - 0.5);
+    
+    shuffledNodes.forEach(node => {
+      const neighbors = adj.get(node.id)!;
+      if (neighbors.length === 0) return;
       
-      centroids.forEach((centroid, i) => {
-        let dist = 0;
-        for (let j = 0; j < f.length; j++) {
-          const diff = f[j] - centroid[j];
-          dist += diff * diff;
-        }
-        
-        if (dist < minDist) {
-          minDist = dist;
-          closestCluster = i;
+      const labelCounts = new Map<number, number>();
+      neighbors.forEach(neighborId => {
+        const label = labels.get(neighborId)!;
+        labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
+      });
+      
+      // Find most frequent label
+      let maxCount = -1;
+      let bestLabels: number[] = [];
+      labelCounts.forEach((count, label) => {
+        if (count > maxCount) {
+          maxCount = count;
+          bestLabels = [label];
+        } else if (count === maxCount) {
+          bestLabels.push(label);
         }
       });
-
-      if (node.group !== closestCluster) {
-        node.group = closestCluster;
-        node.color = COLORS[closestCluster % COLORS.length];
+      
+      const chosenLabel = bestLabels[Math.floor(Math.random() * bestLabels.length)];
+      if (labels.get(node.id) !== chosenLabel) {
+        labels.set(node.id, chosenLabel);
         changed = true;
       }
     });
-
-    // Update centroids
-    const newCentroidSums = Array.from({ length: k }, () => Array(5).fill(0).concat([0])); // [x, y, d, nx, ny, count]
-    nodes.forEach(node => {
-      const f = getFeature(node.id);
-      const sum = newCentroidSums[node.group];
-      for (let j = 0; j < 5; j++) sum[j] += f[j];
-      sum[5]++; // count
-    });
-
-    centroids = newCentroidSums.map(sum => {
-      const count = sum[5];
-      if (count === 0) return Array.from({ length: 5 }, () => Math.random() * 1000 - 500);
-      return sum.slice(0, 5).map(v => v / count);
-    });
   }
 
-  stats.value.groups = k;
+  // Map labels to groups
+  const uniqueLabels = Array.from(new Set(labels.values()));
+  const labelToGroup = new Map<number, number>();
+  uniqueLabels.forEach((label, i) => labelToGroup.set(label, i));
+
+  nodes.forEach(node => {
+    const groupIdx = labelToGroup.get(labels.get(node.id)!)!;
+    node.group = groupIdx;
+    node.color = COLORS[groupIdx % COLORS.length];
+  });
+
+  stats.value.groups = uniqueLabels.length;
   loading.value = false;
   
   if (simulationRef.value) {
@@ -276,12 +233,136 @@ const runKMeans = (k: number) => {
   }
 };
 
-const autoCluster = () => {
-  const suggestedK = Math.max(2, Math.min(30, Math.floor(Math.sqrt(data.value.nodes.length / 2))));
-  kValue.value = suggestedK;
-  runKMeans(suggestedK);
-};
+// Louvain Method for Community Detection
+const runLouvain = () => {
+  if (data.value.nodes.length === 0) return;
+  
+  loading.value = true;
+  const nodes = data.value.nodes;
+  const links = data.value.links;
+  const m = links.length;
+  if (m === 0) {
+    loading.value = false;
+    return;
+  }
 
+  // 1. Initialize each node to its own community
+  const nodeToCommunity = new Map<string, number>();
+  const communityToNodes = new Map<number, Set<string>>();
+  const nodeDegrees = new Map<string, number>();
+  const adj = new Map<string, Map<string, number>>();
+
+  nodes.forEach((node, i) => {
+    nodeToCommunity.set(node.id, i);
+    communityToNodes.set(i, new Set([node.id]));
+    nodeDegrees.set(node.id, 0);
+    adj.set(node.id, new Map());
+  });
+
+  links.forEach(link => {
+    const s = typeof link.source === 'string' ? link.source : (link.source as Node).id;
+    const t = typeof link.target === 'string' ? link.target : (link.target as Node).id;
+    
+    nodeDegrees.set(s, (nodeDegrees.get(s) || 0) + 1);
+    nodeDegrees.set(t, (nodeDegrees.get(t) || 0) + 1);
+    
+    adj.get(s)!.set(t, (adj.get(s)!.get(t) || 0) + 1);
+    adj.get(t)!.set(s, (adj.get(t)!.get(s) || 0) + 1);
+  });
+
+  const communityWeights = new Map<number, number>(); // sum_tot
+  communityToNodes.forEach((nodesInComm, commId) => {
+    let weight = 0;
+    nodesInComm.forEach(nodeId => {
+      weight += nodeDegrees.get(nodeId) || 0;
+    });
+    communityWeights.set(commId, weight);
+  });
+
+  let changed = true;
+  let iterations = 0;
+  const maxIterations = 10;
+
+  while (changed && iterations < maxIterations) {
+    changed = false;
+    iterations++;
+
+    // Shuffle nodes for better convergence
+    const shuffledNodes = [...nodes].sort(() => Math.random() - 0.5);
+
+    shuffledNodes.forEach(node => {
+      const nodeId = node.id;
+      const currentCommId = nodeToCommunity.get(nodeId)!;
+      const ki = nodeDegrees.get(nodeId)!;
+
+      // Find neighboring communities
+      const neighborComms = new Map<number, number>(); // commId -> k_i,in
+      const neighbors = adj.get(nodeId)!;
+      neighbors.forEach((weight, neighborId) => {
+        const neighborCommId = nodeToCommunity.get(neighborId)!;
+        neighborComms.set(neighborCommId, (neighborComms.get(neighborCommId) || 0) + weight);
+      });
+
+      // Calculate modularity gain for each neighbor community
+      let bestCommId = currentCommId;
+      let maxDeltaQ = 0;
+
+      // Remove node from current community temporarily for calculation
+      const currentSumTot = communityWeights.get(currentCommId)! - ki;
+
+      neighborComms.forEach((kiin, commId) => {
+        const sumTot = commId === currentCommId ? currentSumTot : communityWeights.get(commId)!;
+        
+        // Delta Q formula (simplified for weight=1)
+        const deltaQ = kiin - (sumTot * ki) / (2 * m);
+        
+        if (deltaQ > maxDeltaQ) {
+          maxDeltaQ = deltaQ;
+          bestCommId = commId;
+        }
+      });
+
+      if (bestCommId !== currentCommId) {
+        // Move node
+        communityToNodes.get(currentCommId)!.delete(nodeId);
+        if (communityToNodes.get(currentCommId)!.size === 0) {
+          communityToNodes.delete(currentCommId);
+          communityWeights.delete(currentCommId);
+        } else {
+          communityWeights.set(currentCommId, communityWeights.get(currentCommId)! - ki);
+        }
+
+        if (!communityToNodes.has(bestCommId)) {
+          communityToNodes.set(bestCommId, new Set());
+          communityWeights.set(bestCommId, 0);
+        }
+        communityToNodes.get(bestCommId)!.add(nodeId);
+        communityWeights.set(bestCommId, communityWeights.get(bestCommId)! + ki);
+        nodeToCommunity.set(nodeId, bestCommId);
+        
+        changed = true;
+      }
+    });
+  }
+
+  // Map final communities to groups and colors
+  const finalComms = Array.from(communityToNodes.keys());
+  const commToGroupIdx = new Map<number, number>();
+  finalComms.forEach((commId, i) => commToGroupIdx.set(commId, i));
+
+  nodes.forEach(node => {
+    const groupIdx = commToGroupIdx.get(nodeToCommunity.get(node.id)!)!;
+    node.group = groupIdx;
+    node.color = COLORS[groupIdx % COLORS.length];
+  });
+
+  stats.value.groups = finalComms.length;
+  loading.value = false;
+  
+  if (simulationRef.value) {
+    simulationRef.value.alpha(0.1).restart();
+  }
+};
 const handleSearch = (query: string) => {
   searchQuery.value = query;
   if (!query.trim()) {
@@ -311,11 +392,42 @@ const handleSearch = (query: string) => {
   }
 };
 
+// Zoom to a specific group
+const zoomToGroup = (groupId: number) => {
+  const groupNodes = data.value.nodes.filter(n => n.group === groupId);
+  if (groupNodes.length === 0) return;
+
+  const xMin = d3.min(groupNodes, d => d.x!)!;
+  const xMax = d3.max(groupNodes, d => d.x!)!;
+  const yMin = d3.min(groupNodes, d => d.y!)!;
+  const yMax = d3.max(groupNodes, d => d.y!)!;
+
+  const width = dimensions.value.width;
+  const height = dimensions.value.height;
+  const dx = xMax - xMin;
+  const dy = yMax - yMin;
+  const x = (xMin + xMax) / 2;
+  const y = (yMin + yMax) / 2;
+  
+  // Calculate scale to fit the group with some padding
+  const padding = 40;
+  const scale = Math.max(0.5, Math.min(8, 0.8 / Math.max(dx / width, dy / height)));
+  
+  if (zoomRef.value && canvasRef.value) {
+    d3.select(canvasRef.value)
+      .transition()
+      .duration(750)
+      .call(zoomRef.value.transform, d3.zoomIdentity.translate(width / 2 - scale * x, height / 2 - scale * y).scale(scale));
+  }
+};
+
 // Render function
 const render = (ctx: CanvasRenderingContext2D, width: number, height: number, k: number, tx: number, ty: number) => {
   const currentData = data.value;
   const currentSelectedNode = selectedNode.value;
   const currentHoveredNode = hoveredNode.value;
+  const currentGroupViewMode = groupViewMode.value;
+  const currentSelectedGroup = selectedGroup.value;
   
   ctx.save();
   ctx.clearRect(0, 0, width, height);
@@ -333,15 +445,38 @@ const render = (ctx: CanvasRenderingContext2D, width: number, height: number, k:
     });
   }
 
+  // Helper to determine if a node/link should be dimmed
+  const isNodeDimmed = (node: Node) => {
+    if (currentGroupViewMode && currentSelectedGroup !== null) {
+      return node.group !== currentSelectedGroup;
+    }
+    if (currentSelectedNode) {
+      return !neighborIds.has(node.id);
+    }
+    return false;
+  };
+
+  const isLinkDimmed = (s: Node, t: Node) => {
+    if (currentGroupViewMode && currentSelectedGroup !== null) {
+      return s.group !== currentSelectedGroup || t.group !== currentSelectedGroup;
+    }
+    if (currentSelectedNode) {
+      return s.id !== currentSelectedNode.id && t.id !== currentSelectedNode.id;
+    }
+    return false;
+  };
+
   ctx.beginPath();
-  ctx.strokeStyle = currentSelectedNode ? 'rgba(200, 200, 200, 0.05)' : 'rgba(200, 200, 200, 0.15)';
+  ctx.strokeStyle = (currentSelectedNode || (currentGroupViewMode && currentSelectedGroup !== null)) 
+    ? 'rgba(200, 200, 200, 0.05)' 
+    : 'rgba(200, 200, 200, 0.15)';
   ctx.lineWidth = 0.5 / k;
   
   if (k > 0.4) {
     currentData.links.forEach(link => {
       const s = link.source as Node;
       const t = link.target as Node;
-      if (currentSelectedNode && (s.id === currentSelectedNode.id || t.id === currentSelectedNode.id)) return;
+      if (isLinkDimmed(s, t)) return;
       ctx.moveTo(s.x!, s.y!);
       ctx.lineTo(t.x!, t.y!);
     });
@@ -371,14 +506,14 @@ const render = (ctx: CanvasRenderingContext2D, width: number, height: number, k:
   }
 
   currentData.nodes.forEach(node => {
-    const isActive = !currentSelectedNode || neighborIds.has(node.id);
+    const dimmed = isNodeDimmed(node);
     ctx.beginPath();
-    if (isActive) {
+    if (!dimmed) {
       ctx.fillStyle = node.color;
       ctx.globalAlpha = 1;
     } else {
       ctx.fillStyle = '#e2e8f0';
-      ctx.globalAlpha = 0.3;
+      ctx.globalAlpha = 0.2;
     }
     const r = node.radius / Math.sqrt(k);
     ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
@@ -397,8 +532,8 @@ const render = (ctx: CanvasRenderingContext2D, width: number, height: number, k:
     ctx.fillStyle = '#334155';
     ctx.textAlign = 'center';
     currentData.nodes.forEach(node => {
-      const isActive = !currentSelectedNode || neighborIds.has(node.id);
-      if (isActive) {
+      const dimmed = isNodeDimmed(node);
+      if (!dimmed) {
         ctx.fillText(node.label, node.x!, node.y! + (node.radius + 10) / k);
       }
     });
@@ -439,36 +574,33 @@ watch([data, dimensions], () => {
 
   const groupCenters = new Map<number, { x: number, y: number }>();
   if (stats.value.groups > 1) {
-    const groupSums = new Map<number, { x: number, y: number, count: number }>();
-    data.value.nodes.forEach(node => {
-      const current = groupSums.get(node.group) || { x: 0, y: 0, count: 0 };
-      groupSums.set(node.group, {
-        x: current.x + (node.x || 0),
-        y: current.y + (node.y || 0),
-        count: current.count + 1
+    const numGroups = stats.value.groups;
+    const radius = Math.min(width, height) * 0.3; // Spread groups in a circle
+    for (let i = 0; i < numGroups; i++) {
+      const angle = (i / numGroups) * 2 * Math.PI;
+      groupCenters.set(i, {
+        x: width / 2 + radius * Math.cos(angle),
+        y: height / 2 + radius * Math.sin(angle)
       });
-    });
-    groupSums.forEach((val, key) => {
-      groupCenters.set(key, { x: val.x / val.count, y: val.y / val.count });
-    });
+    }
   }
 
   if (simulationRef.value) simulationRef.value.stop();
 
   const simulation = markRaw(d3.forceSimulation<Node>(data.value.nodes)
-    .force('link', d3.forceLink<Node, Link>(data.value.links).id(d => d.id).distance(40).strength(0.05))
-    .force('charge', d3.forceManyBody().strength(-40).distanceMax(300))
+    .force('link', d3.forceLink<Node, Link>(data.value.links).id(d => d.id).distance(30).strength(0.1))
+    .force('charge', d3.forceManyBody().strength(-60).distanceMax(500))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collide', d3.forceCollide().radius(d => (d as Node).radius + 3))
+    .force('collide', d3.forceCollide().radius(d => (d as Node).radius + 4))
     .force('x', d3.forceX(node => {
       const n = node as Node;
       return groupCenters.get(n.group)?.x || width / 2;
-    }).strength(() => stats.value.groups > 1 ? 0.05 : 0))
+    }).strength(() => stats.value.groups > 1 ? 0.15 : 0))
     .force('y', d3.forceY(node => {
       const n = node as Node;
       return groupCenters.get(n.group)?.y || height / 2;
-    }).strength(() => stats.value.groups > 1 ? 0.05 : 0))
-    .alphaDecay(0.03));
+    }).strength(() => stats.value.groups > 1 ? 0.15 : 0))
+    .alphaDecay(0.02));
 
   simulationRef.value = simulation;
   isSimulating.value = true;
@@ -539,8 +671,8 @@ const handleClick = (event: MouseEvent) => {
   selectedNode.value = found;
 };
 
-// Re-render when transform, hoveredNode, or selectedNode changes
-watch([transform, hoveredNode, selectedNode, dimensions], () => {
+// Re-render when transform, hoveredNode, selectedNode, or groupViewMode changes
+watch([transform, hoveredNode, selectedNode, dimensions, groupViewMode, selectedGroup], () => {
   if (!canvasRef.value || dimensions.value.width === 0) return;
   const canvas = canvasRef.value;
   const context = canvas.getContext('2d');
@@ -598,12 +730,27 @@ const toggleSimulation = () => {
 
     <!-- UI Overlay -->
     <div class="absolute top-6 left-6 flex flex-col gap-4 pointer-events-none">
-      <div class="bg-white/90 backdrop-blur-md p-6 rounded-2xl shadow-xl border border-slate-200 pointer-events-auto w-80">
-        <h1 class="text-2xl font-bold text-slate-900 mb-1">Huge Graph</h1>
-        <p class="text-sm text-slate-500 mb-6">Visualizing complex relationships at scale</p>
+      <div 
+        class="bg-white/90 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200 pointer-events-auto transition-all duration-300 ease-in-out overflow-hidden"
+        :class="isCollapsed ? 'w-12 h-12 p-2' : 'w-80 p-6'"
+      >
+        <div class="flex items-center justify-between" :class="{ 'mb-1': !isCollapsed }">
+          <h1 v-if="!isCollapsed" class="text-2xl font-bold text-slate-900 truncate">Huge Graph</h1>
+          <button 
+            @click="isCollapsed = !isCollapsed"
+            class="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 transition-colors"
+            :title="isCollapsed ? 'Expand' : 'Collapse'"
+          >
+            <ChevronRight v-if="isCollapsed" :size="20" />
+            <ChevronLeft v-else :size="20" />
+          </button>
+        </div>
         
-        <div class="space-y-4">
-          <div class="relative">
+        <div v-if="!isCollapsed" class="mt-1">
+          <p class="text-sm text-slate-500 mb-6">Visualizing complex relationships at scale</p>
+          
+          <div class="space-y-4">
+            <div class="relative">
             <Search class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" :size="16" />
             <input 
               type="text"
@@ -636,32 +783,66 @@ const toggleSimulation = () => {
           <div class="pt-4 border-t border-slate-100">
             <div class="flex justify-between items-center mb-2">
               <label class="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                Clustering (K-Means)
+                Community Detection
               </label>
+            </div>
+            <div class="grid grid-cols-1 gap-2">
               <button 
-                @click="autoCluster"
-                class="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-600 px-2 py-0.5 rounded transition-colors"
+                @click="runLouvain"
+                :disabled="data.nodes.length === 0"
+                class="w-full flex items-center justify-center gap-2 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-xl transition-all text-xs font-medium"
+                title="Louvain Modularity Optimization"
               >
-                Auto
+                <RefreshCw :size="12" :class="{ 'animate-spin': loading }" />
+                Louvain Method
+              </button>
+              <button 
+                @click="runLabelPropagation"
+                :disabled="data.nodes.length === 0"
+                class="w-full flex items-center justify-center gap-2 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white rounded-xl transition-all text-xs font-medium"
+                title="Fast Label Propagation"
+              >
+                <RefreshCw :size="12" :class="{ 'animate-spin': loading }" />
+                Label Propagation
               </button>
             </div>
-            <div class="flex gap-3 items-center">
-              <input 
-                type="range" 
-                min="2" 
-                max="30" 
-                step="1"
-                v-model.number="kValue"
-                class="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
-              />
-              <span class="text-xs font-mono font-bold text-purple-600 w-4">{{ kValue }}</span>
+          </div>
+
+          <div class="pt-4 border-t border-slate-100">
+            <div class="flex items-center justify-between mb-2">
+              <label class="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                Group View Mode
+              </label>
               <button 
-                @click="runKMeans(kValue)"
-                :disabled="data.nodes.length === 0"
-                class="p-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-300 text-white rounded-lg transition-colors"
-                title="Run Clustering"
+                @click="groupViewMode = !groupViewMode"
+                class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none"
+                :class="groupViewMode ? 'bg-blue-600' : 'bg-slate-200'"
               >
-                <Layers :size="14" />
+                <span 
+                  class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform"
+                  :class="groupViewMode ? 'translate-x-5' : 'translate-x-1'"
+                />
+              </button>
+            </div>
+            
+            <div v-if="groupViewMode" class="space-y-2 animate-in fade-in slide-in-from-top-1 duration-200">
+              <select 
+                v-model="selectedGroup"
+                class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all pointer-events-auto"
+              >
+                <option :value="null">Select a group...</option>
+                <option v-for="i in stats.groups" :key="i-1" :value="i-1">
+                  Community {{ i-1 }} ({{ data.nodes.filter(n => n.group === i-1).length }} nodes)
+                </option>
+              </select>
+              
+              <button 
+                v-if="selectedGroup !== null"
+                @click="zoomToGroup(selectedGroup)"
+                class="w-full flex items-center justify-center gap-2 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl transition-all text-xs font-medium"
+              >
+                <Maximize :size="12" />
+                Focus on Group
               </button>
             </div>
           </div>
@@ -710,8 +891,9 @@ const toggleSimulation = () => {
           </div>
         </div>
       </div>
+    </div>
 
-      <Transition name="fade">
+    <Transition name="fade">
         <div v-if="hoveredNode || selectedNode" class="bg-slate-900 text-white p-4 rounded-xl shadow-2xl pointer-events-auto border border-slate-700">
           <div class="flex items-center gap-3">
             <div class="w-3 h-3 rounded-full" :style="{ backgroundColor: (hoveredNode || selectedNode)!.color }" />
