@@ -1,0 +1,5 @@
+{
+  "name": "Huge Graph Explorer",
+  "description": "A high-performance graph visualization tool capable of rendering over 10,000 nodes. Supports custom graph file uploads with the format: TARGET <-f- SOURCE.",
+  "requestFramePermissions": []
+}
