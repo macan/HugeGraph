@@ -160,7 +160,7 @@ const fetchLatestPosts = async (nodeName: string) => {
   posts.value = [];
   
   try {
-    const response = await fetch(`https://i.gogingko.net/api/v1/last/${nodeName}?n=10`);
+    const response = await fetch(`https://i.gogingko.net/api/v1/last/${nodeName}?n=25`);
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     const data = await response.json();
     posts.value = Array.isArray(data) ? data : (data.posts || []);
@@ -1080,7 +1080,7 @@ const toggleSimulation = () => {
             </div>
             
             <!-- Photo -->
-            <div v-if="post.data?.photos" class="mb-3 rounded-xl overflow-hidden border border-slate-100 bg-slate-50">
+            <div v-if="post.data?.photos && post.data.photos.length > 0" class="mb-3 rounded-xl overflow-hidden border border-slate-100 bg-slate-50">
               <img 
                 :src="`https://i.gogingko.net/api/v1/v/telegram-photo/${post.key.split('/').pop()}_0`" 
                 class="w-full h-auto max-h-64 object-cover hover:scale-105 transition-transform duration-500"
@@ -1090,7 +1090,7 @@ const toggleSimulation = () => {
             </div>
 
             <!-- Video -->
-            <div v-if="post.data?.videos" class="mb-3 rounded-xl overflow-hidden border border-slate-100 bg-slate-900">
+            <div v-if="post.data?.videos && post.data.videos.length > 0" class="mb-3 rounded-xl overflow-hidden border border-slate-100 bg-slate-900">
               <video 
                 :src="`https://i.gogingko.net/api/v1/v/telegram-video/${post.key.split('/').pop()}-0`" 
                 class="w-full h-auto max-h-64"
@@ -1118,7 +1118,7 @@ const toggleSimulation = () => {
         </div>
         
         <div class="p-4 bg-slate-50 border-t border-slate-100 text-[10px] text-slate-400 text-center">
-          Showing last 10 entries from Gingko API
+          Showing last 25 entries from Gingko API
         </div>
       </div>
     </Transition>
