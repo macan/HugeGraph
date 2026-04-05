@@ -490,8 +490,8 @@ const render = (ctx: CanvasRenderingContext2D, width: number, height: number, k:
 
   ctx.beginPath();
   ctx.strokeStyle = (currentSelectedNode || (currentGroupViewMode && currentSelectedGroup !== null)) 
-    ? 'rgba(200, 200, 200, 0.05)' 
-    : 'rgba(200, 200, 200, 0.15)';
+    ? 'rgba(170, 170, 170, 0.08)' 
+    : 'rgba(170, 170, 170, 0.2)';
   ctx.lineWidth = 0.5 / k;
   
   if (k > 0.4) {
