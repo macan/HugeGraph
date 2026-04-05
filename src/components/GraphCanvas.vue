@@ -42,10 +42,14 @@ const selectedNode = shallowRef<Node | null>(null);
 const transform = shallowRef<d3.ZoomTransform>(d3.zoomIdentity);
 const isSimulating = ref(false);
 const dimensions = ref({ width: 0, height: 0 });
-const graphUrl = ref('');
+const graphUrl = ref('https://i.gogingko.net/api/v1/v/exchange/forwards.txt');
 const isCollapsed = ref(false);
 const selectedGroup = ref<number | null>(null);
 const groupViewMode = ref(false);
+const posts = ref<any[]>([]);
+const postsLoading = ref(false);
+const showPostsWidget = ref(false);
+const postsNodeName = ref('');
 
 // Simulation and Zoom refs
 const simulationRef = shallowRef<d3.Simulation<Node, Link> | null>(null);
@@ -146,6 +150,24 @@ const handleUrlLoad = async () => {
     alert('Failed to load graph from URL. Ensure the URL is accessible and CORS is enabled.');
   } finally {
     loading.value = false;
+  }
+};
+
+const fetchLatestPosts = async (nodeName: string) => {
+  postsNodeName.value = nodeName;
+  postsLoading.value = true;
+  showPostsWidget.value = true;
+  posts.value = [];
+  
+  try {
+    const response = await fetch(`https://i.gogingko.net/api/v1/last/${nodeName}?n=10`);
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    const data = await response.json();
+    posts.value = Array.isArray(data) ? data : (data.posts || []);
+  } catch (error) {
+    console.error('Failed to fetch posts:', error);
+  } finally {
+    postsLoading.value = false;
   }
 };
 
@@ -553,6 +575,8 @@ onMounted(() => {
     });
     resizeObserver.observe(containerRef.value);
   }
+  // Load default graph
+  handleUrlLoad();
 });
 
 onUnmounted(() => {
@@ -671,6 +695,31 @@ const handleClick = (event: MouseEvent) => {
   selectedNode.value = found;
 };
 
+const handleContextMenu = (event: MouseEvent) => {
+  event.preventDefault();
+  if (!canvasRef.value) return;
+  const canvas = canvasRef.value;
+  const rect = canvas.getBoundingClientRect();
+  const x = (event.clientX - rect.left - transform.value.x) / transform.value.k;
+  const y = (event.clientY - rect.top - transform.value.y) / transform.value.k;
+
+  let found: Node | null = null;
+  const searchRadius = 10 / transform.value.k;
+  
+  for (const node of data.value.nodes) {
+    const dx = node.x! - x;
+    const dy = node.y! - y;
+    if (dx * dx + dy * dy < (node.radius + searchRadius) ** 2) {
+      found = node;
+      break;
+    }
+  }
+  
+  if (found) {
+    fetchLatestPosts(found.label);
+  }
+};
+
 // Re-render when transform, hoveredNode, selectedNode, or groupViewMode changes
 watch([transform, hoveredNode, selectedNode, dimensions, groupViewMode, selectedGroup], () => {
   if (!canvasRef.value || dimensions.value.width === 0) return;
@@ -719,6 +768,7 @@ const toggleSimulation = () => {
       class="w-full h-full cursor-grab active:cursor-grabbing"
       @mousemove="handleMouseMove"
       @click="handleClick"
+      @contextmenu="handleContextMenu"
     />
 
     <!-- Empty State -->
@@ -977,12 +1027,101 @@ const toggleSimulation = () => {
             <li>• Drag to pan the graph</li>
             <li>• Scroll to zoom in/out</li>
             <li>• Hover nodes for details</li>
+            <li>• Right-click node for latest posts</li>
             <li>• Zoom in to see connections and labels</li>
             <li>• Use simulation to auto-layout</li>
           </ul>
         </div>
       </div>
     </div>
+
+    <!-- Latest Posts Widget -->
+    <Transition name="slide-right">
+      <div v-if="showPostsWidget" class="absolute top-8 right-8 bottom-8 w-96 bg-white/95 backdrop-blur-md rounded-3xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden z-40 pointer-events-auto">
+        <div class="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+          <div>
+            <h3 class="font-bold text-slate-900">Latest Posts</h3>
+            <p class="text-xs text-slate-500">Channel: <span class="font-mono text-blue-600 font-semibold">{{ postsNodeName }}</span></p>
+          </div>
+          <button @click="showPostsWidget = false" class="p-2 hover:bg-slate-200 rounded-full transition-colors text-slate-400 hover:text-slate-600">
+            <ChevronRight :size="20" />
+          </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+          <div v-if="postsLoading" class="flex flex-col items-center justify-center h-64 space-y-4">
+            <div class="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin" />
+            <p class="text-xs text-slate-400 animate-pulse">Fetching latest updates...</p>
+          </div>
+
+          <div v-else-if="posts.length === 0" class="flex flex-col items-center justify-center h-64 text-center p-8">
+            <div class="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mb-4">
+              <Info :size="24" class="text-slate-300" />
+            </div>
+            <p class="text-sm text-slate-500 font-medium">No posts found</p>
+            <p class="text-xs text-slate-400 mt-1">This channel might be empty or restricted.</p>
+          </div>
+
+          <div v-for="(post, idx) in posts" :key="idx" class="bg-white border border-slate-100 rounded-2xl p-4 shadow-sm hover:shadow-md transition-all border-l-4 border-l-blue-500 overflow-hidden">
+            <!-- Metadata Badges -->
+            <div class="flex flex-wrap gap-2 mb-3">
+              <span class="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[10px] font-mono" title="Post ID">
+                ID: {{ post.key }}
+              </span>
+              <span v-if="post.data?.date" class="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] font-medium">
+                {{ post.data.date }}
+              </span>
+              <span v-if="post.data?.user" class="px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[10px] font-medium">
+                @{{ post.data.user }}
+              </span>
+              <span v-if="post.data?.views" class="px-2 py-0.5 bg-slate-100 text-slate-500 rounded text-[10px] font-medium">
+                {{ post.data.views }} views
+              </span>
+            </div>
+            
+            <!-- Photo -->
+            <div v-if="post.data?.photos" class="mb-3 rounded-xl overflow-hidden border border-slate-100 bg-slate-50">
+              <img 
+                :src="`https://i.gogingko.net/api/v1/v/telegram-photo/${post.key.split('/').pop()}_0`" 
+                class="w-full h-auto max-h-64 object-cover hover:scale-105 transition-transform duration-500"
+                referrerpolicy="no-referrer"
+                loading="lazy"
+              />
+            </div>
+
+            <!-- Video -->
+            <div v-if="post.data?.videos" class="mb-3 rounded-xl overflow-hidden border border-slate-100 bg-slate-900">
+              <video 
+                :src="`https://i.gogingko.net/api/v1/v/telegram-video/${post.key.split('/').pop()}-0`" 
+                class="w-full h-auto max-h-64"
+                controls
+                preload="metadata"
+              ></video>
+            </div>
+
+            <!-- Content -->
+            <div class="space-y-3">
+              <div v-if="post.data?.author" class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                Author: {{ post.data.author }}
+              </div>
+              
+              <div v-if="post.data?.content" class="text-xs text-slate-700 whitespace-pre-wrap break-words leading-relaxed">
+                {{ post.data.content }}
+              </div>
+
+              <div v-if="post.data?.linkPreview" class="mt-2 p-2 bg-slate-50 rounded-lg border border-slate-100 text-[10px] text-slate-500 italic">
+                <span class="font-bold not-italic block mb-1 text-slate-400">Link Preview:</span>
+                {{ post.data.linkPreview }}
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="p-4 bg-slate-50 border-t border-slate-100 text-[10px] text-slate-400 text-center">
+          Showing last 10 entries from Gingko API
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -996,5 +1135,30 @@ const toggleSimulation = () => {
 .fade-leave-to {
   opacity: 0;
   transform: scale(0.95);
+}
+
+.slide-right-enter-active,
+.slide-right-leave-active {
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.slide-right-enter-from,
+.slide-right-leave-to {
+  opacity: 0;
+  transform: translateX(100px);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
 }
 </style>
