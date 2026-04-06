@@ -171,6 +171,22 @@ const fetchLatestPosts = async (nodeName: string) => {
   }
 };
 
+const formatDate = (dateString: string) => {
+  try {
+    const date = new Date(dateString);
+    return date.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch (e) {
+    return dateString;
+  }
+};
+
 // Label Propagation Algorithm
 const runLabelPropagation = () => {
   if (data.value.nodes.length === 0) return;
@@ -1069,7 +1085,7 @@ const toggleSimulation = () => {
                 ID: {{ post.key }}
               </span>
               <span v-if="post.data?.date" class="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] font-medium">
-                {{ post.data.date }}
+                {{ formatDate(post.data.date) }}
               </span>
               <span v-if="post.data?.user" class="px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[10px] font-medium">
                 @{{ post.data.user }}
