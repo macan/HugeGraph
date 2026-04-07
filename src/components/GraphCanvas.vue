@@ -468,9 +468,23 @@ const render = (ctx: CanvasRenderingContext2D, width: number, height: number, k:
   const currentSelectedGroup = selectedGroup.value;
   
   ctx.save();
+  ctx.imageSmoothingEnabled = false; // Fast rendering on mobile
   ctx.clearRect(0, 0, width, height);
   ctx.translate(tx, ty);
   ctx.scale(k, k);
+
+  // Calculate visible bounding box for frustum culling
+  const buffer = 50 / k;
+  const minX = -tx / k - buffer;
+  const maxX = (width - tx) / k + buffer;
+  const minY = -ty / k - buffer;
+  const maxY = (height - ty) / k + buffer;
+
+  const isVisible = (x: number, y: number) => {
+    return x >= minX && x <= maxX && y >= minY && y <= maxY;
+  };
+
+  const isHugeGraph = currentData.nodes.length > 5000;
 
   const neighborIds = new Set<string>();
   if (currentSelectedNode) {
@@ -510,11 +524,15 @@ const render = (ctx: CanvasRenderingContext2D, width: number, height: number, k:
     : 'rgba(170, 170, 170, 0.2)';
   ctx.lineWidth = 0.5 / k;
   
-  if (k > 0.4) {
+  const linkRenderThreshold = isHugeGraph ? 0.8 : 0.4;
+  if (k > linkRenderThreshold) {
     currentData.links.forEach(link => {
       const s = link.source as Node;
       const t = link.target as Node;
       if (isLinkDimmed(s, t)) return;
+      // Culling: only draw if at least one endpoint is visible
+      if (!isVisible(s.x!, s.y!) && !isVisible(t.x!, t.y!)) return;
+      
       ctx.moveTo(s.x!, s.y!);
       ctx.lineTo(t.x!, t.y!);
     });
@@ -543,33 +561,78 @@ const render = (ctx: CanvasRenderingContext2D, width: number, height: number, k:
     });
   }
 
+  // Batch rendering nodes by color and dimmed state
+  const batches = new Map<string, Node[]>();
+  const dimmedNodes: Node[] = [];
+  const highlightedNodes: Node[] = []; // For hover/selected outlines
+
   currentData.nodes.forEach(node => {
-    const dimmed = isNodeDimmed(node);
-    ctx.beginPath();
-    if (!dimmed) {
-      ctx.fillStyle = node.color;
-      ctx.globalAlpha = 1;
-    } else {
-      ctx.fillStyle = '#e2e8f0';
-      ctx.globalAlpha = 0.2;
-    }
-    const r = node.radius / Math.sqrt(k);
-    ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
-    ctx.fill();
+    if (!isVisible(node.x!, node.y!)) return;
+
     if (currentHoveredNode?.id === node.id || currentSelectedNode?.id === node.id) {
-      ctx.globalAlpha = 1;
+      highlightedNodes.push(node);
+    }
+
+    const dimmed = isNodeDimmed(node);
+    if (dimmed) {
+      dimmedNodes.push(node);
+    } else {
+      if (!batches.has(node.color)) {
+        batches.set(node.color, []);
+      }
+      batches.get(node.color)!.push(node);
+    }
+  });
+
+  // Draw dimmed nodes
+  if (dimmedNodes.length > 0) {
+    ctx.beginPath();
+    ctx.fillStyle = '#e2e8f0';
+    ctx.globalAlpha = 0.2;
+    dimmedNodes.forEach(node => {
+      const r = node.radius / Math.sqrt(k);
+      ctx.moveTo(node.x! + r, node.y!);
+      ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
+    });
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Draw active nodes grouped by color
+  batches.forEach((nodes, color) => {
+    ctx.beginPath();
+    ctx.fillStyle = color;
+    nodes.forEach(node => {
+      const r = node.radius / Math.sqrt(k);
+      // Fast path for very small nodes (zoomed out)
+      if (r < 1.5) {
+        ctx.rect(node.x! - r, node.y! - r, r * 2, r * 2);
+      } else {
+        ctx.moveTo(node.x! + r, node.y!);
+        ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
+      }
+    });
+    ctx.fill();
+  });
+
+  // Draw highlighted outlines
+  if (highlightedNodes.length > 0) {
+    highlightedNodes.forEach(node => {
+      ctx.beginPath();
+      const r = node.radius / Math.sqrt(k);
+      ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
       ctx.strokeStyle = currentSelectedNode?.id === node.id ? '#3b82f6' : '#fff';
       ctx.lineWidth = (currentSelectedNode?.id === node.id ? 3 : 2) / k;
       ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-  });
+    });
+  }
 
   if (k > 1.5) {
     ctx.font = `${12 / k}px Inter, sans-serif`;
     ctx.fillStyle = '#334155';
     ctx.textAlign = 'center';
     currentData.nodes.forEach(node => {
+      if (!isVisible(node.x!, node.y!)) return;
       const dimmed = isNodeDimmed(node);
       if (!dimmed) {
         ctx.fillText(node.label, node.x!, node.y! + (node.radius + 10) / k);
@@ -608,9 +671,10 @@ watch([data, dimensions], () => {
   if (!context) return;
 
   const { width, height } = dimensions.value;
-  canvas.width = width * window.devicePixelRatio;
-  canvas.height = height * window.devicePixelRatio;
-  context.scale(window.devicePixelRatio, window.devicePixelRatio);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2); // Cap DPR for performance on mobile
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  context.scale(dpr, dpr);
 
   const groupCenters = new Map<number, { x: number, y: number }>();
   if (stats.value.groups > 1) {
@@ -627,11 +691,14 @@ watch([data, dimensions], () => {
 
   if (simulationRef.value) simulationRef.value.stop();
 
+  const isLargeGraph = data.value.nodes.length > 2000;
+  const isHugeGraph = data.value.nodes.length > 5000;
+
   const simulation = markRaw(d3.forceSimulation<Node>(data.value.nodes)
-    .force('link', d3.forceLink<Node, Link>(data.value.links).id(d => d.id).distance(30).strength(0.1))
-    .force('charge', d3.forceManyBody().strength(-60).distanceMax(500))
+    .force('link', d3.forceLink<Node, Link>(data.value.links).id(d => d.id).distance(30).strength(isLargeGraph ? 0.05 : 0.1))
+    .force('charge', d3.forceManyBody().strength(isLargeGraph ? -30 : -60).distanceMax(isLargeGraph ? 200 : 500).theta(isHugeGraph ? 1.2 : 0.9))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collide', d3.forceCollide().radius(d => (d as Node).radius + 4))
+    .force('collide', isHugeGraph ? null : d3.forceCollide().radius(d => (d as Node).radius + 4).iterations(isLargeGraph ? 1 : 2))
     .force('x', d3.forceX(node => {
       const n = node as Node;
       return groupCenters.get(n.group)?.x || width / 2;
@@ -640,7 +707,7 @@ watch([data, dimensions], () => {
       const n = node as Node;
       return groupCenters.get(n.group)?.y || height / 2;
     }).strength(() => stats.value.groups > 1 ? 0.15 : 0))
-    .alphaDecay(0.02));
+    .alphaDecay(isHugeGraph ? 0.05 : (isLargeGraph ? 0.03 : 0.02)));
 
   simulationRef.value = simulation;
   isSimulating.value = true;
@@ -665,72 +732,55 @@ watch([data, dimensions], () => {
 }, { immediate: true });
 
 // Mouse events
-const handleMouseMove = (event: MouseEvent) => {
-  if (!canvasRef.value) return;
+const findNodeAtPosition = (clientX: number, clientY: number): Node | null => {
+  if (!canvasRef.value) return null;
   const canvas = canvasRef.value;
   const rect = canvas.getBoundingClientRect();
-  const x = (event.clientX - rect.left - transform.value.x) / transform.value.k;
-  const y = (event.clientY - rect.top - transform.value.y) / transform.value.k;
+  const k = transform.value.k;
+  const x = (clientX - rect.left - transform.value.x) / k;
+  const y = (clientY - rect.top - transform.value.y) / k;
 
   let found: Node | null = null;
-  const searchRadius = 10 / transform.value.k;
+  let minDistanceSq = Infinity;
+  // searchRadius is in simulation coordinates. 10 pixels on screen = 10 / k in simulation.
+  const searchRadius = 10 / k;
   
   for (const node of data.value.nodes) {
     const dx = node.x! - x;
     const dy = node.y! - y;
-    if (dx * dx + dy * dy < (node.radius + searchRadius) ** 2) {
-      found = node;
-      break;
+    const distSq = dx * dx + dy * dy;
+    
+    // The visual radius of the node on screen is scaled by Math.sqrt(k).
+    // So its radius in simulation coordinates is node.radius / Math.sqrt(k).
+    const visualRadius = node.radius / Math.sqrt(k);
+    const hitRadius = visualRadius + searchRadius;
+    
+    if (distSq < hitRadius * hitRadius) {
+      if (distSq < minDistanceSq) {
+        minDistanceSq = distSq;
+        found = node;
+      }
     }
   }
   
+  return found;
+};
+
+const handleMouseMove = (event: MouseEvent) => {
+  const found = findNodeAtPosition(event.clientX, event.clientY);
   if (found?.id !== hoveredNode.value?.id) {
     hoveredNode.value = found;
   }
 };
 
 const handleClick = (event: MouseEvent) => {
-  if (!canvasRef.value) return;
-  const canvas = canvasRef.value;
-  const rect = canvas.getBoundingClientRect();
-  const x = (event.clientX - rect.left - transform.value.x) / transform.value.k;
-  const y = (event.clientY - rect.top - transform.value.y) / transform.value.k;
-
-  let found: Node | null = null;
-  const searchRadius = 10 / transform.value.k;
-  
-  for (const node of data.value.nodes) {
-    const dx = node.x! - x;
-    const dy = node.y! - y;
-    if (dx * dx + dy * dy < (node.radius + searchRadius) ** 2) {
-      found = node;
-      break;
-    }
-  }
-  
+  const found = findNodeAtPosition(event.clientX, event.clientY);
   selectedNode.value = found;
 };
 
 const handleContextMenu = (event: MouseEvent) => {
   event.preventDefault();
-  if (!canvasRef.value) return;
-  const canvas = canvasRef.value;
-  const rect = canvas.getBoundingClientRect();
-  const x = (event.clientX - rect.left - transform.value.x) / transform.value.k;
-  const y = (event.clientY - rect.top - transform.value.y) / transform.value.k;
-
-  let found: Node | null = null;
-  const searchRadius = 10 / transform.value.k;
-  
-  for (const node of data.value.nodes) {
-    const dx = node.x! - x;
-    const dy = node.y! - y;
-    if (dx * dx + dy * dy < (node.radius + searchRadius) ** 2) {
-      found = node;
-      break;
-    }
-  }
-  
+  const found = findNodeAtPosition(event.clientX, event.clientY);
   if (found) {
     fetchLatestPosts(found.label);
   }
