@@ -1125,9 +1125,36 @@ const toggleSimulation = () => {
                 {{ post.data.content }}
               </div>
 
-              <div v-if="post.data?.linkPreview" class="mt-2 p-2 bg-slate-50 rounded-lg border border-slate-100 text-[10px] text-slate-500 italic">
-                <span class="font-bold not-italic block mb-1 text-slate-400">Link Preview:</span>
-                {{ post.data.linkPreview }}
+              <!-- Link Preview -->
+              <div v-if="post.data?.linkPreview" class="mt-3 overflow-hidden bg-slate-50 rounded-xl border border-slate-200 hover:border-slate-300 transition-colors">
+                <div class="flex flex-col sm:flex-row">
+                  <!-- Photo -->
+                  <div v-if="post.data.linkPreview.image" class="sm:w-24 shrink-0 bg-slate-100">
+                    <img 
+                      :src="`https://i.gogingko.net/api/v1/v/telegram-photo/${post.key.split('/').pop()}_l_0`" 
+                      class="w-full h-24 sm:h-full object-cover"
+                      referrerpolicy="no-referrer"
+                      loading="lazy"
+                    />
+                  </div>
+                  <!-- Content -->
+                  <div class="p-3 flex flex-col justify-center flex-1 min-w-0">
+                    <div v-if="post.data.linkPreview.siteName" class="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 truncate">
+                      {{ post.data.linkPreview.siteName }}
+                    </div>
+                    <div class="text-xs font-semibold text-slate-800 mb-1 line-clamp-2">
+                      <a v-if="post.data.linkPreview.href" :href="post.data.linkPreview.href" target="_blank" rel="noopener noreferrer" class="hover:text-blue-600 hover:underline">
+                        {{ post.data.linkPreview.title || 'Link' }}
+                      </a>
+                      <span v-else>
+                        {{ post.data.linkPreview.title || 'Link Preview' }}
+                      </span>
+                    </div>
+                    <div v-if="post.data.linkPreview.description" class="text-[10px] text-slate-500 line-clamp-2 leading-relaxed">
+                      {{ post.data.linkPreview.description }}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
